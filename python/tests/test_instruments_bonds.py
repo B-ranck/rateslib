@@ -18,6 +18,7 @@ from rateslib.instruments import (
     FloatRateNote,
     IndexFixedRateBond,
 )
+from rateslib.instruments.bonds import BondCalcMode
 from rateslib.solver import Solver
 
 
@@ -42,6 +43,94 @@ def curve2():
         dt(2022, 10, 1): 0.95,
     }
     return Curve(nodes=nodes, interpolation="log_linear")
+
+
+class TestBondCalcMode:
+    def test_custom_function(self):
+        def _my_acc(*args):
+            return 0.5
+
+        my_calc = BondCalcMode(
+            settle_accrual_type=_my_acc,
+            ytm_accrual_type=_my_acc,
+            v1_type="compounding",
+            v2_type="regular",
+            v3_type="compounding",
+            c1_type="cashflow",
+            ci_type="cashflow",
+            cn_type="cashflow",
+        )
+
+        bond = FixedRateBond(dt(2022, 1, 1), "2y", spec="de_gb", fixed_rate=2.0, calc_mode=my_calc)
+        de_bond = FixedRateBond(
+            dt(2022, 1, 1),
+            "2y",
+            spec="de_gb",
+            fixed_rate=2.0,
+        )
+
+        assert bond.accrued(dt(2022, 2, 4)) == 1.0  # 0.5 * 2.0
+        assert bond.accrued(dt(2022, 2, 4)) != de_bond.accrued(dt(2022, 2, 4))
+
+        assert bond.ytm(100.0, dt(2022, 2, 4)) != de_bond.ytm(100.0, dt(2022, 2, 4))
+
+        assert my_calc.kwargs["settle_accrual"] == "custom"
+        assert my_calc.kwargs["ytm_accrual"] == "custom"
+
+    def test_custom_function_affects_ytm(self):
+        def _my_acc(*args):
+            return 0.4
+
+        my_calc = BondCalcMode(
+            settle_accrual_type="linear_days",
+            ytm_accrual_type=_my_acc,
+            v1_type="compounding_final_simple",
+            v2_type="regular",
+            v3_type="compounding",
+            c1_type="cashflow",
+            ci_type="cashflow",
+            cn_type="cashflow",
+        )
+
+        bond = FixedRateBond(dt(2022, 1, 1), "2y", spec="de_gb", fixed_rate=2.0, calc_mode=my_calc)
+
+        v2 = 1 / (1 + 0.02)
+        v1 = v2 ** (1 - 0.4)
+        expected = 2 * v1 + 102 * v1 * v2 - 0.4 * 2
+        result = bond.price(ytm=2.00, settlement=dt(2022, 1, 1))
+
+        assert abs(result - expected) < 1e-10
+
+    def test_custom_ytm_disc_funcs(self):
+        def _my_acc(*args):
+            return 0.0
+
+        def _v(*args):
+            return 1 / (1 + 0.02)
+
+        calc_mode = BondCalcMode(
+            settle_accrual_type=_my_acc,
+            ytm_accrual_type=_my_acc,
+            v1_type=_v,
+            v2_type=_v,
+            v3_type=_v,
+            c1_type="cashflow",
+            ci_type="cashflow",
+            cn_type="cashflow",
+        )
+
+        bond = FixedRateBond(
+            effective=dt(2000, 1, 1),
+            termination="2y",
+            fixed_rate=2.00,
+            spec="de_gb",
+            calc_mode=calc_mode,
+        )
+
+        # custom funcs give the same clean price of 100 for any date
+        for date in [dt(2000, 1, 1), dt(2000, 2, 1), dt(2000, 11, 1), dt(2001, 6, 1)]:
+            result = bond.price(ytm=2.0, settlement=dt(2000, 1, 1))
+            assert abs(result - 100.0) < 1e-10
 
 
 class TestFixedRateBond:
@@ -342,6 +431,18 @@ class TestFixedRateBond:
         accrued = bond.accrued(settlement=s)
         assert abs(accrued - acc) < 1e-6
         assert abs(result - exp) < 1e-5
+
+    def test_long_stub_first_cashflow(self):
+        # test against 31.B.ii.A356.Appendix.B.I.A Example Long First
+        note = FixedRateBond(
+            effective=dt(1990, 12, 3),
+            termination=dt(1996, 2, 15),
+            stub="longfront",
+            spec="us_gb",
+            fixed_rate=7.875,
+            notional=-7000,
+        )
+        assert abs(note.leg1.periods[0].cashflow - 386.474184670) < 5e-7
 
     # Swedish Government Bond Tests. Data from alternative systems.
 
@@ -668,6 +769,137 @@ class TestFixedRateBond:
 
         result = frb.ytm(price=price, settlement=set_)
         assert abs(result - exp_ytm) < 1e-5
+
+    # US Corp: BNY Mello
+
+    @pytest.mark.parametrize(
+        ("settlement", "price", "exp_ytm", "exp_acc"),
+        [
+            (dt(2025, 5, 6), 101.0, 3.493237, 0.08555556),
+            (dt(2028, 4, 3), 100.05, 3.077448, 1.65763889),
+        ],
+    )
+    def test_bny_mellon(self, settlement, price, exp_ytm, exp_acc) -> None:
+        # BNY Mellon ISIN: US06406RAH03, compared with BBG BXT.
+        b = FixedRateBond(
+            effective=dt(2018, 4, 30),
+            termination=dt(2028, 4, 28),
+            fixed_rate=3.85,
+            convention="30u360",
+            spec="us_gb",
+            calc_mode="us_corp",
+        )
+        ytm = b.ytm(price, settlement)
+        acc = b.accrued(settlement)
+        assert abs(ytm - exp_ytm) < 1e-6
+        assert abs(acc - exp_acc) < 1e-8
+
+    @pytest.mark.parametrize(
+        ("settlement", "price", "exp_ytm", "exp_acc"),
+        [
+            (dt(2025, 5, 6), 101.0, 3.493237, 0.08555556),
+            (dt(2028, 4, 3), 100.05, 3.077448, 1.65763889),
+        ],
+    )
+    def test_bny_mellon_spec(self, settlement, price, exp_ytm, exp_acc) -> None:
+        # BNY Mellon ISIN: US06406RAH03, compared with BBG BXT.
+        b = FixedRateBond(
+            effective=dt(2018, 4, 30),
+            termination=dt(2028, 4, 28),
+            fixed_rate=3.85,
+            spec="us_corp",
+        )
+        ytm = b.ytm(price, settlement)
+        acc = b.accrued(settlement)
+        assert abs(ytm - exp_ytm) < 1e-6
+        assert abs(acc - exp_acc) < 1e-8
+
+    # Customised Thai Government Bonds
+
+    def test_thai_example_a3(self):
+        # see file in _static/thai_standard_formula.pdf
+        def _v1_thb_gb(obj, ytm, f, settlement, acc_idx, v2, accrual, period_idx):
+            r_u = (obj.leg1.schedule.uschedule[acc_idx + 1] - settlement).days
+            return v2 ** (r_u * f / 365)
+
+        def _v3_thb_gb(obj, ytm, f, settlement, acc_idx, v2, accrual, period_idx):
+            r_u = (obj.leg1.schedule.uschedule[-1] - obj.leg1.schedule.uschedule[-2]).days
+            return v2 ** (r_u * f / 365)
+
+        thai_cm = BondCalcMode(
+            settle_accrual_type="linear_days",
+            ytm_accrual_type="linear_days",
+            v1_type=_v1_thb_gb,
+            v2_type="regular",
+            v3_type=_v3_thb_gb,
+            c1_type="cashflow",
+            ci_type="full_coupon",
+            cn_type="cashflow",
+        )
+
+        b = FixedRateBond(
+            effective=dt(1993, 1, 15),
+            termination=dt(1996, 4, 30),
+            stub="shortback",
+            frequency="S",
+            fixed_rate=11.25,
+            convention="act365f",
+            modifier="none",
+            currency="thb",
+            calendar="bus",
+            calc_mode=thai_cm,
+        )
+
+        expected_acc = 4.86986301
+        expected_clean = 103.1099263
+        result_acc = b.accrued(settlement=dt(1994, 12, 20))
+        result_clean = b.price(ytm=8.75, settlement=dt(1994, 12, 20))
+
+        assert abs(result_acc - expected_acc) < 1e-8
+        assert abs(result_clean - expected_clean) < 1e-7
+
+    def test_thai_example_a3_exdiv(self):
+        # see file in _static/thai_standard_formula.pdf
+        def _v1_thb_gb(obj, ytm, f, settlement, acc_idx, v2, accrual, period_idx):
+            r_u = (obj.leg1.schedule.uschedule[acc_idx + 1] - settlement).days
+            return v2 ** (r_u * f / 365)
+
+        def _v3_thb_gb(obj, ytm, f, settlement, acc_idx, v2, accrual, period_idx):
+            r_u = (obj.leg1.schedule.uschedule[-1] - obj.leg1.schedule.uschedule[-2]).days
+            return v2 ** (r_u * f / 365)
+
+        thai_cm = BondCalcMode(
+            settle_accrual_type="linear_days",
+            ytm_accrual_type="linear_days",
+            v1_type=_v1_thb_gb,
+            v2_type="regular",
+            v3_type=_v3_thb_gb,
+            c1_type="cashflow",
+            ci_type="full_coupon",
+            cn_type="cashflow",
+        )
+
+        b = FixedRateBond(
+            effective=dt(1993, 1, 15),
+            termination=dt(1996, 4, 30),
+            stub="shortback",
+            frequency="S",
+            fixed_rate=11.25,
+            convention="act365f",
+            modifier="none",
+            currency="thb",
+            calendar="bus",
+            calc_mode=thai_cm,
+            ex_div=21,
+        )
+
+        result_acc = b.accrued(dt(1994, 12, 20))
+        expected_acc = -0.80136986
+        assert abs(result_acc - expected_acc) < 1e-8
+
+        result_clean = b.price(ytm=8.75, settlement=dt(1994, 12, 20))
+        expected_clean = 103.19036939
+        assert abs(result_clean - expected_clean) < 1e-8
 
     # General Method Coverage
 
@@ -1124,14 +1356,15 @@ class TestFixedRateBond:
             BONDS[i].ytm(price=RAND_PRICES[i], settlement=dt(2001, 8, 30))
 
     def test_custom_calc_mode(self):
-        from rateslib.instruments.bonds import BondCalcMode
-
         cm = BondCalcMode(
             settle_accrual_type="linear_days",
             ytm_accrual_type="linear_days",
             v1_type="compounding",
             v2_type="regular",
             v3_type="compounding",
+            c1_type="cashflow",
+            ci_type="cashflow",
+            cn_type="cashflow",
         )
         bond = FixedRateBond(
             effective=dt(2001, 1, 1),
@@ -1500,14 +1733,15 @@ class TestIndexFixedRateBond:
         assert (result - 0.749935) < 1e-5
 
     def test_custom_calc_mode(self):
-        from rateslib.instruments.bonds import BondCalcMode
-
         cm = BondCalcMode(
             settle_accrual_type="linear_days",
             ytm_accrual_type="linear_days",
             v1_type="compounding",
             v2_type="regular",
             v3_type="compounding",
+            c1_type="cashflow",
+            ci_type="cashflow",
+            cn_type="cashflow",
         )
         bond = IndexFixedRateBond(
             effective=dt(2001, 1, 1),
@@ -1728,7 +1962,7 @@ class TestBill:
         assert result == 0.4985413405436174
 
     def test_custom_calc_mode(self):
-        from rateslib.instruments.bonds import BillCalcMode, BondCalcMode
+        from rateslib.instruments.bonds import BillCalcMode
 
         cm = BillCalcMode(price_type="simple", ytm_clone_kwargs="uk_gb")
         bill = Bill(
