@@ -51,6 +51,7 @@ dev = [
     "nbsphinx>=0.9.5,<1.0",
     "jupyterlab>=4.0,<5.0",
     "pickleshare>=0.7.5,<1.0",
+    "maturin>=1.8.3",
 ]
 
 [tool.pytest.ini_options]

@@ -153,3 +153,4 @@ scratch6.py
 Cargo.lock
 .devcontainer
 .cargo/
+.vscode/settings.json

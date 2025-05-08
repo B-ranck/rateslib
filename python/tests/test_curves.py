@@ -3,7 +3,13 @@ from math import exp, log
 
 import numpy as np
 import pytest
+
+import matplotlib
+matplotlib.use("Agg")
+
+
 from matplotlib import pyplot as plt
+
 from rateslib import default_context
 from rateslib.calendars import get_calendar
 from rateslib.curves import (
