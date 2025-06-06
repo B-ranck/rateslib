@@ -140,7 +140,7 @@ class FixedPeriod(BasePeriod):
         except TypeError as e:
             # either fixed rate is None
             if isinstance(self.fixed_rate, NoInput):
-                raise TypeError("`fixed_rate` must be set on the Period for an `npv`.")
+                raise TypeError("`9fixed_rate` must be set on the Period for an `npv`.")
             else:
                 raise e
         return _maybe_local(value, local, self.currency, fx, base)
